@@ -81,7 +81,7 @@ def _validate_product_request(
 
 @router.get("")
 async def get_all_products(
-    page: int = Query(1, ge=1),
+    page: int = Query(1, ge=1, le=1000),
     limit: int = Query(10, ge=1, le=100),
     sort: Optional[str] = Query(None, enum=list(_ALLOWED_SORT_FIELDS)),
     order: Optional[str] = Query("asc", pattern="^(asc|desc)$"),
@@ -108,7 +108,9 @@ async def get_all_products(
 @router.get("/search")
 async def search_products(
     q: Optional[str] = Query(
-        None, description="Text search across name and description"
+        None,
+        max_length=100,
+        description="Text search across name and description",
     ),
     category: Optional[str] = Query(None, description="Exact category match"),
     minPrice: Optional[float] = Query(

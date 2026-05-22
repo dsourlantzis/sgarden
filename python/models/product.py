@@ -15,8 +15,8 @@ class ProductInDB(BaseModel):
 
 
 class ProductRequest(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
+    name: Optional[str] = Field(None, max_length=200)
+    description: Optional[str] = Field(None, max_length=2000)
     category: Optional[str] = None
     price: Optional[float] = None
     stock: Optional[int] = None
