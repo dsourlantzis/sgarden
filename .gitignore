@@ -32,3 +32,6 @@ Thumbs.db
 
 # Node (for tests)
 node_modules/
+
+# Claude
+CLAUDE.md

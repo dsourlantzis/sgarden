@@ -5,6 +5,7 @@ from security.jwt_handler import get_current_user
 from bson import ObjectId
 from datetime import datetime
 from typing import Optional
+import re
 
 router = APIRouter(prefix="/api/products", tags=["products"])
 
@@ -60,9 +61,10 @@ async def search_products(
     query = {}
 
     if q:
+        safe_q = re.escape(q)
         query["$or"] = [
-            {"name": {"$regex": q, "$options": "i"}},
-            {"description": {"$regex": q, "$options": "i"}},
+            {"name": {"$regex": safe_q, "$options": "i"}},
+            {"description": {"$regex": safe_q, "$options": "i"}},
         ]
 
     if category:
@@ -80,6 +82,44 @@ async def search_products(
     async for product in products_collection.find(query):
         products.append(product_to_response(product))
     return products
+
+
+@router.get("/stats")
+async def get_product_stats():
+    pipeline = [
+        {
+            "$facet": {
+                "totals": [
+                    {
+                        "$group": {
+                            "_id": None,
+                            "totalCount": {"$sum": 1},
+                            "averagePrice": {"$avg": "$price"},
+                            "minPrice": {"$min": "$price"},
+                            "maxPrice": {"$max": "$price"},
+                        }
+                    }
+                ],
+                "byCategory": [
+                    {"$group": {"_id": "$category", "count": {"$sum": 1}}}
+                ],
+            }
+        }
+    ]
+
+    result = await products_collection.aggregate(pipeline).to_list(length=1)
+    data = result[0]
+
+    totals = data["totals"][0] if data["totals"] else {}
+    category_count = {item["_id"]: item["count"] for item in data["byCategory"] if item["_id"]}
+
+    return {
+        "totalCount": totals.get("totalCount", 0),
+        "averagePrice": totals.get("averagePrice"),
+        "minPrice": totals.get("minPrice"),
+        "maxPrice": totals.get("maxPrice"),
+        "categoryCount": category_count,
+    }
 
 
 @router.get("/{product_id}")
