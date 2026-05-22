@@ -3,6 +3,7 @@ from typing import Optional
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pymongo import ReturnDocument, UpdateOne
 
 from database import orders_collection, products_collection
 from models.order import OrderRequest
@@ -33,7 +34,7 @@ def _order_to_response(order: dict) -> dict:
 
 
 async def _resolve_items(items: list) -> tuple:
-    """Fetch product prices, validate stock, compute total."""
+    """Batch-fetch product prices, validate stock, compute total."""
     if not items:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -41,10 +42,6 @@ async def _resolve_items(items: list) -> tuple:
                 "items": "items cannot be empty"
             }},
         )
-
-    resolved = []
-    total = 0.0
-    stock_updates = []
 
     for item in items:
         if not ObjectId.is_valid(item.productId):
@@ -55,9 +52,17 @@ async def _resolve_items(items: list) -> tuple:
                 }},
             )
 
-        product = await products_collection.find_one(
-            {"_id": ObjectId(item.productId)}
-        )
+    oids = [ObjectId(item.productId) for item in items]
+    products_map: dict = {}
+    async for product in products_collection.find({"_id": {"$in": oids}}):
+        products_map[str(product["_id"])] = product
+
+    resolved = []
+    total = 0.0
+    stock_updates = []
+
+    for item in items:
+        product = products_map.get(item.productId)
         if not product:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -93,11 +98,14 @@ async def create_order(
 ):
     resolved_items, total, stock_updates = await _resolve_items(request.items)
 
-    for product_oid, quantity in stock_updates:
-        await products_collection.update_one(
+    now = datetime.utcnow()
+    await products_collection.bulk_write([
+        UpdateOne(
             {"_id": product_oid},
-            {"$inc": {"stock": -quantity}, "$set": {"updatedAt": datetime.utcnow()}},
+            {"$inc": {"stock": -quantity}, "$set": {"updatedAt": now}},
         )
+        for product_oid, quantity in stock_updates
+    ])
 
     order_doc = {
         "items": resolved_items,
@@ -121,7 +129,7 @@ async def get_all_orders(
     if status_filter:
         query["status"] = status_filter
     orders = []
-    async for order in orders_collection.find(query):
+    async for order in orders_collection.find(query).limit(100):
         orders.append(_order_to_response(order))
     return orders
 
@@ -179,12 +187,11 @@ async def update_order_status(
             },
         )
 
-    await orders_collection.update_one(
+    order = await orders_collection.find_one_and_update(
         {"_id": ObjectId(order_id)},
         {"$set": {"status": new_status, "updatedAt": datetime.utcnow()}},
+        return_document=ReturnDocument.AFTER,
     )
-
-    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
     return _order_to_response(order)
 
 
@@ -202,22 +209,20 @@ async def update_order(
 
     resolved_items, total, _ = await _resolve_items(request.items)
 
-    result = await orders_collection.update_one(
+    order = await orders_collection.find_one_and_update(
         {"_id": ObjectId(order_id)},
         {"$set": {
             "items": resolved_items,
             "total": total,
             "updatedAt": datetime.utcnow(),
         }},
+        return_document=ReturnDocument.AFTER,
     )
-
-    if result.matched_count == 0:
+    if order is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Order not found",
         )
-
-    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
     return _order_to_response(order)
 
 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from database import products_collection, settings_collection
 from security.jwt_handler import get_current_user
@@ -23,10 +23,15 @@ async def _get_threshold() -> int:
 
 
 @router.get("")
-async def get_alerts(current_user: dict = Depends(get_current_user)):
+async def get_alerts(
+    current_user: dict = Depends(get_current_user),
+    limit: int = Query(100, ge=1, le=100),
+):
     threshold = await _get_threshold()
     alerts = []
-    async for product in products_collection.find({"stock": {"$lt": threshold}}):
+    async for product in products_collection.find(
+        {"stock": {"$lt": threshold}}, {"name": 1, "stock": 1}
+    ).limit(limit):
         stock = product.get("stock", 0)
         alerts.append({
             "productId": str(product["_id"]),

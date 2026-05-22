@@ -4,6 +4,7 @@ from typing import Optional
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pymongo import ReturnDocument
 
 from database import products_collection
 from models.product import ProductRequest, ProductResponse
@@ -141,7 +142,7 @@ async def search_products(
         query["price"] = price_filter
 
     products = []
-    async for product in products_collection.find(query):
+    async for product in products_collection.find(query).limit(100):
         products.append(product_to_response(product))
     return products
 
@@ -315,17 +316,15 @@ async def update_product(
 
     update_fields["updatedAt"] = datetime.utcnow()
 
-    result = await products_collection.update_one(
+    product = await products_collection.find_one_and_update(
         {"_id": ObjectId(product_id)},
         {"$set": update_fields},
+        return_document=ReturnDocument.AFTER,
     )
-
-    if result.matched_count == 0:
+    if product is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
         )
-
-    product = await products_collection.find_one({"_id": ObjectId(product_id)})
     return product_to_response(product)
 
 
@@ -352,16 +351,15 @@ async def update_stock(
             detail={"message": "Validation failed", "errors": {"stock": "stock cannot be negative"}},
         )
 
-    result = await products_collection.update_one(
+    product = await products_collection.find_one_and_update(
         {"_id": ObjectId(product_id)},
         {"$set": {"stock": int(stock), "updatedAt": datetime.utcnow()}},
+        return_document=ReturnDocument.AFTER,
     )
-    if result.matched_count == 0:
+    if product is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
         )
-
-    product = await products_collection.find_one({"_id": ObjectId(product_id)})
     return product_to_response(product)
 
 

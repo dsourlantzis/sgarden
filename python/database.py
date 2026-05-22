@@ -1,7 +1,12 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import settings
 
-client = AsyncIOMotorClient(settings.database_url)
+client = AsyncIOMotorClient(
+    settings.database_url,
+    serverSelectionTimeoutMS=5000,
+    connectTimeoutMS=5000,
+    socketTimeoutMS=10000,
+)
 
 # Extract database name from URL, default to "sgarden"
 db_name = settings.database_url.rsplit("/", 1)[-1].split("?")[0] if "/" in settings.database_url else "sgarden"
