@@ -67,7 +67,7 @@ async def get_sales_analytics(
         if item.get("_id")
     ]
 
-    # Top products — unwind items, group, then enrich with product names
+    # Top products — unwind, group, then $lookup product names in one pipeline
     top_pipeline = [
         {"$match": match},
         {"$unwind": "$items"},
@@ -78,24 +78,35 @@ async def get_sales_analytics(
         }},
         {"$sort": {"totalRevenue": -1}},
         {"$limit": 10},
+        {"$addFields": {
+            "productOid": {
+                "$convert": {"input": "$_id", "to": "objectId", "onError": None, "onNull": None}
+            }
+        }},
+        {"$lookup": {
+            "from": "products",
+            "localField": "productOid",
+            "foreignField": "_id",
+            "as": "productInfo",
+        }},
+        {"$project": {
+            "totalQuantity": 1,
+            "totalRevenue": 1,
+            "productName": {"$arrayElemAt": ["$productInfo.name", 0]},
+        }},
     ]
 
     top_raw = await orders_collection.aggregate(top_pipeline).to_list(length=10)
 
-    top_products = []
-    for item in top_raw:
-        product_id = item["_id"]
-        name = None
-        if ObjectId.is_valid(product_id):
-            product = await products_collection.find_one({"_id": ObjectId(product_id)})
-            if product:
-                name = product.get("name")
-        top_products.append({
-            "productId": product_id,
-            "productName": name,
+    top_products = [
+        {
+            "productId": item["_id"],
+            "productName": item.get("productName"),
             "totalQuantity": item["totalQuantity"],
             "totalRevenue": round(item["totalRevenue"], 2),
-        })
+        }
+        for item in top_raw
+    ]
 
     return {
         "totalRevenue": total_revenue,
