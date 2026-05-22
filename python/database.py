@@ -19,6 +19,11 @@ settings_collection = db["settings"]
 
 
 async def init_indexes():
-    """Create database indexes on startup."""
     await users_collection.create_index("username", unique=True)
     await users_collection.create_index("email", unique=True)
+    await products_collection.create_index("category")
+    await products_collection.create_index("price")
+    await products_collection.create_index("stock")
+    await products_collection.create_index([("name", "text"), ("description", "text")])
+    await orders_collection.create_index("status")
+    await orders_collection.create_index("createdAt")

@@ -30,7 +30,8 @@ async def get_alerts(
     threshold = await _get_threshold()
     alerts = []
     async for product in products_collection.find(
-        {"stock": {"$lt": threshold}}, {"name": 1, "stock": 1}
+        {"stock": {"$lt": threshold}, "name": {"$exists": True, "$ne": None}},
+        {"name": 1, "stock": 1},
     ).limit(limit):
         stock = product.get("stock", 0)
         alerts.append({
@@ -45,6 +46,9 @@ async def get_alerts(
 
 @router.put("/threshold")
 async def set_threshold(request: dict, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
     threshold = request.get("threshold")
     if threshold is None or not isinstance(threshold, (int, float)):
         raise HTTPException(
@@ -63,4 +67,5 @@ async def set_threshold(request: dict, current_user: dict = Depends(get_current_
         {"$set": {"key": _THRESHOLD_KEY, "value": threshold}},
         upsert=True,
     )
+    _threshold_cache = threshold
     return {"threshold": threshold}

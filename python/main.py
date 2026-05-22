@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -14,15 +15,17 @@ from routes.products import router as products_router
 from routes.users import router as users_router
 from seed import seed_data
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Starting SGarden API...")
+    logger.info("Starting SGarden API...")
     await init_indexes()
     await seed_data()
-    print("SGarden API started successfully")
+    logger.info("SGarden API started successfully")
     yield
-    print("Shutting down SGarden API...")
+    logger.info("Shutting down SGarden API...")
 
 
 app = FastAPI(
@@ -35,7 +38,6 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

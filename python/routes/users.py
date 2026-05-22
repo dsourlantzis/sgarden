@@ -97,6 +97,11 @@ async def advanced_search(
     if email:
         query["email"] = {"$regex": re.escape(email), "$options": "i"}
     if role:
+        if role not in _VALID_ROLES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"message": "Validation failed", "errors": {"role": f"role must be one of: {', '.join(sorted(_VALID_ROLES))}"}},
+            )
         query["role"] = role
 
     sort_field = sort_by if sort_by in _ALLOWED_USER_SORT_FIELDS else "_id"
