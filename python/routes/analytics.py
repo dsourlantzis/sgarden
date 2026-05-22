@@ -1,7 +1,6 @@
 from datetime import datetime
 from typing import Optional
 
-from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from database import orders_collection, products_collection
@@ -16,6 +15,9 @@ async def get_sales_analytics(
     startDate: Optional[str] = Query(None),
     endDate: Optional[str] = Query(None),
 ):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
     date_filter = {}
     try:
         if startDate:
@@ -30,32 +32,55 @@ async def get_sales_analytics(
 
     match = {"createdAt": date_filter} if date_filter else {}
 
-    # Totals + revenueByPeriod in one round-trip
-    summary_pipeline = [
+    pipeline = [
         {"$match": match},
-        {
-            "$facet": {
-                "totals": [
-                    {"$group": {
-                        "_id": None,
-                        "totalRevenue": {"$sum": "$total"},
-                        "totalOrders": {"$sum": 1},
-                    }}
-                ],
-                "byPeriod": [
-                    {"$group": {
-                        "_id": {"$dateToString": {"format": "%Y-%m", "date": "$createdAt"}},
-                        "revenue": {"$sum": "$total"},
-                        "orders": {"$sum": 1},
-                    }},
-                    {"$sort": {"_id": 1}},
-                ],
-            }
-        },
+        {"$facet": {
+            "totals": [
+                {"$group": {
+                    "_id": None,
+                    "totalRevenue": {"$sum": "$total"},
+                    "totalOrders": {"$sum": 1},
+                }}
+            ],
+            "byPeriod": [
+                {"$group": {
+                    "_id": {"$dateToString": {"format": "%Y-%m", "date": "$createdAt"}},
+                    "revenue": {"$sum": "$total"},
+                    "orders": {"$sum": 1},
+                }},
+                {"$sort": {"_id": 1}},
+            ],
+            "topItems": [
+                {"$unwind": "$items"},
+                {"$group": {
+                    "_id": "$items.productId",
+                    "totalQuantity": {"$sum": "$items.quantity"},
+                    "totalRevenue": {"$sum": {"$multiply": ["$items.price", "$items.quantity"]}},
+                }},
+                {"$sort": {"totalRevenue": -1}},
+                {"$limit": 10},
+                {"$addFields": {
+                    "productOid": {
+                        "$convert": {"input": "$_id", "to": "objectId", "onError": None, "onNull": None}
+                    }
+                }},
+                {"$lookup": {
+                    "from": "products",
+                    "localField": "productOid",
+                    "foreignField": "_id",
+                    "as": "productInfo",
+                }},
+                {"$project": {
+                    "totalQuantity": 1,
+                    "totalRevenue": 1,
+                    "productName": {"$arrayElemAt": ["$productInfo.name", 0]},
+                }},
+            ],
+        }},
     ]
 
-    summary_result = await orders_collection.aggregate(summary_pipeline).to_list(length=1)
-    data = summary_result[0] if summary_result else {}
+    result = await orders_collection.aggregate(pipeline).to_list(length=1)
+    data = result[0] if result else {}
 
     totals = data.get("totals", [])
     total_revenue = round(totals[0].get("totalRevenue", 0), 2) if totals else 0
@@ -67,37 +92,6 @@ async def get_sales_analytics(
         if item.get("_id")
     ]
 
-    # Top products — unwind, group, then $lookup product names in one pipeline
-    top_pipeline = [
-        {"$match": match},
-        {"$unwind": "$items"},
-        {"$group": {
-            "_id": "$items.productId",
-            "totalQuantity": {"$sum": "$items.quantity"},
-            "totalRevenue": {"$sum": {"$multiply": ["$items.price", "$items.quantity"]}},
-        }},
-        {"$sort": {"totalRevenue": -1}},
-        {"$limit": 10},
-        {"$addFields": {
-            "productOid": {
-                "$convert": {"input": "$_id", "to": "objectId", "onError": None, "onNull": None}
-            }
-        }},
-        {"$lookup": {
-            "from": "products",
-            "localField": "productOid",
-            "foreignField": "_id",
-            "as": "productInfo",
-        }},
-        {"$project": {
-            "totalQuantity": 1,
-            "totalRevenue": 1,
-            "productName": {"$arrayElemAt": ["$productInfo.name", 0]},
-        }},
-    ]
-
-    top_raw = await orders_collection.aggregate(top_pipeline).to_list(length=10)
-
     top_products = [
         {
             "productId": item["_id"],
@@ -105,7 +99,7 @@ async def get_sales_analytics(
             "totalQuantity": item["totalQuantity"],
             "totalRevenue": round(item["totalRevenue"], 2),
         }
-        for item in top_raw
+        for item in data.get("topItems", [])
     ]
 
     return {

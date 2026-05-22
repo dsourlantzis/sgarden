@@ -1,10 +1,10 @@
-from database import users_collection, products_collection
-import bcrypt
+import logging
 from datetime import datetime
 
+from database import users_collection, products_collection
+from security.jwt_handler import hash_password
 
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+logger = logging.getLogger(__name__)
 
 
 SEED_USERS = [
@@ -54,7 +54,7 @@ async def seed_data():
         existing = await users_collection.find_one({"username": user_data["username"]})
         if not existing:
             await users_collection.insert_one(user_data.copy())
-            print(f"Seeded user: {user_data['username']}")
+            logger.info("Seeded user: %s", user_data["username"])
 
     # Seed products
     count = await products_collection.count_documents({})
@@ -64,4 +64,4 @@ async def seed_data():
             product = {**p, "createdAt": datetime.utcnow(), "updatedAt": datetime.utcnow()}
             products_to_insert.append(product)
         await products_collection.insert_many(products_to_insert)
-        print(f"Seeded {len(products_to_insert)} products")
+        logger.info("Seeded %d products", len(products_to_insert))

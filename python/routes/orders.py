@@ -11,6 +11,8 @@ from security.jwt_handler import get_current_user
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 
+_VALID_STATUSES = {"pending", "confirmed", "shipped", "delivered", "cancelled"}
+
 _VALID_TRANSITIONS: dict[str, set] = {
     "pending":   {"confirmed", "cancelled"},
     "confirmed": {"shipped"},
@@ -127,9 +129,15 @@ async def get_all_orders(
 ):
     query = {}
     if status_filter:
+        if status_filter not in _VALID_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"message": "Validation failed", "errors": {"status": f"status must be one of: {', '.join(sorted(_VALID_STATUSES))}"}},
+            )
         query["status"] = status_filter
+
     orders = []
-    async for order in orders_collection.find(query).limit(100):
+    async for order in orders_collection.find(query).sort("createdAt", -1).limit(100):
         orders.append(_order_to_response(order))
     return orders
 
@@ -147,10 +155,7 @@ async def get_order_by_id(
 
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
     if not order:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Order not found",
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
 
     return _order_to_response(order)
 
@@ -202,27 +207,41 @@ async def update_order(
     current_user: dict = Depends(get_current_user),
 ):
     if not ObjectId.is_valid(order_id):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Order not found",
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
 
-    resolved_items, total, _ = await _resolve_items(request.items)
+    existing = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    now = datetime.utcnow()
+
+    # Restore stock from old items before re-allocating
+    old_items = existing.get("items", [])
+    if old_items:
+        await products_collection.bulk_write([
+            UpdateOne(
+                {"_id": ObjectId(item["productId"])},
+                {"$inc": {"stock": item["quantity"]}, "$set": {"updatedAt": now}},
+            )
+            for item in old_items
+            if ObjectId.is_valid(item.get("productId", ""))
+        ])
+
+    resolved_items, total, stock_updates = await _resolve_items(request.items)
+
+    await products_collection.bulk_write([
+        UpdateOne(
+            {"_id": product_oid},
+            {"$inc": {"stock": -quantity}, "$set": {"updatedAt": now}},
+        )
+        for product_oid, quantity in stock_updates
+    ])
 
     order = await orders_collection.find_one_and_update(
         {"_id": ObjectId(order_id)},
-        {"$set": {
-            "items": resolved_items,
-            "total": total,
-            "updatedAt": datetime.utcnow(),
-        }},
+        {"$set": {"items": resolved_items, "total": total, "updatedAt": now}},
         return_document=ReturnDocument.AFTER,
     )
-    if order is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Order not found",
-        )
     return _order_to_response(order)
 
 
@@ -237,13 +256,8 @@ async def delete_order(
             detail="Order not found",
         )
 
-    result = await orders_collection.delete_one(
-        {"_id": ObjectId(order_id)}
-    )
+    result = await orders_collection.delete_one({"_id": ObjectId(order_id)})
     if result.deleted_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Order not found",
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
 
     return {"message": "Order deleted"}

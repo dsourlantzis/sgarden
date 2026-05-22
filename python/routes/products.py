@@ -1,4 +1,4 @@
-import re
+import logging
 from datetime import datetime
 from typing import Optional
 
@@ -7,13 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pymongo import ReturnDocument
 
 from database import products_collection
-from models.product import ProductRequest, ProductResponse
+from models.product import ProductRequest
 from security.jwt_handler import get_current_user
 
 router = APIRouter(prefix="/api/products", tags=["products"])
 
-# CODE QUALITY ISSUE: unused variable
-service_name = "ProductService"
+logger = logging.getLogger(__name__)
 
 _ALLOWED_SORT_FIELDS = {
     "category", "createdAt", "name", "price", "stock", "updatedAt"
@@ -23,22 +22,6 @@ _VALID_CATEGORIES = {"Accessories", "Electronics", "Networking", "Storage"}
 
 def product_to_response(product: dict) -> dict:
     """Convert MongoDB document to API response format."""
-    created = product.get("createdAt")
-    updated = product.get("updatedAt")
-    return {
-        "id": str(product["_id"]),
-        "name": product.get("name"),
-        "description": product.get("description"),
-        "category": product.get("category"),
-        "price": product.get("price"),
-        "stock": product.get("stock", 0),
-        "createdAt": created.isoformat() if created else None,
-        "updatedAt": updated.isoformat() if updated else None,
-    }
-
-
-def format_product(product: dict) -> dict:
-    """CODE QUALITY ISSUE: duplicate of product_to_response above."""
     created = product.get("createdAt")
     updated = product.get("updatedAt")
     return {
@@ -89,19 +72,23 @@ async def get_all_products(
 ):
     sort_field = sort if sort in _ALLOWED_SORT_FIELDS else "_id"
     sort_dir = -1 if order == "desc" else 1
-
-    total = await products_collection.count_documents({})
     skip = (page - 1) * limit
 
-    cursor = (
-        products_collection.find()
-        .sort(sort_field, sort_dir)
-        .skip(skip)
-        .limit(limit)
-    )
-    products = []
-    async for product in cursor:
-        products.append(product_to_response(product))
+    pipeline = [
+        {"$facet": {
+            "data": [
+                {"$sort": {sort_field: sort_dir}},
+                {"$skip": skip},
+                {"$limit": limit},
+            ],
+            "total": [{"$count": "n"}],
+        }}
+    ]
+
+    result = await products_collection.aggregate(pipeline).to_list(length=1)
+    facet = result[0] if result else {}
+    products = [product_to_response(p) for p in facet.get("data", [])]
+    total = facet["total"][0]["n"] if facet.get("total") else 0
 
     return {"data": products, "page": page, "limit": limit, "total": total}
 
@@ -124,11 +111,7 @@ async def search_products(
     query = {}
 
     if q:
-        safe_q = re.escape(q)
-        query["$or"] = [
-            {"name": {"$regex": safe_q, "$options": "i"}},
-            {"description": {"$regex": safe_q, "$options": "i"}},
-        ]
+        query["$text"] = {"$search": q}
 
     if category:
         query["category"] = category
@@ -175,9 +158,8 @@ async def get_product_stats():
 
     totals = data["totals"][0] if data["totals"] else {}
     category_count = {
-        item["_id"]: item["count"]
+        (item["_id"] if item["_id"] else "Uncategorized"): item["count"]
         for item in data["byCategory"]
-        if item["_id"]
     }
 
     return {
@@ -229,53 +211,8 @@ async def create_product(
 
     result = await products_collection.insert_one(product_doc)
     product_doc["_id"] = result.inserted_id
-    print(f"Created product: {request.name}")
+    logger.info("Created product: %s", request.name)
     return product_to_response(product_doc)
-
-
-async def update_product_legacy(
-    product_id: str,
-    request: ProductRequest,
-    current_user: dict = Depends(get_current_user),
-):
-    """CODE QUALITY ISSUE: duplicate of update_product."""
-    if not ObjectId.is_valid(product_id):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
-        )
-
-    update_fields = {}
-    if request.name is not None:
-        update_fields["name"] = request.name
-    if request.description is not None:
-        update_fields["description"] = request.description
-    if request.category is not None:
-        update_fields["category"] = request.category
-    if request.price is not None:
-        update_fields["price"] = request.price
-    if request.stock is not None:
-        update_fields["stock"] = request.stock
-
-    if not update_fields:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No fields to update",
-        )
-
-    update_fields["updatedAt"] = datetime.utcnow()
-
-    result = await products_collection.update_one(
-        {"_id": ObjectId(product_id)},
-        {"$set": update_fields},
-    )
-
-    if result.matched_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
-        )
-
-    product = await products_collection.find_one({"_id": ObjectId(product_id)})
-    return product_to_response(product)
 
 
 @router.put("/{product_id}")
