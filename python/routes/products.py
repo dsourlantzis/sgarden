@@ -41,14 +41,28 @@ def format_product(product: dict) -> dict:
     }
 
 
+_ALLOWED_SORT_FIELDS = {"name", "price", "category", "stock", "createdAt", "updatedAt"}
+
+
 @router.get("")
-async def get_all_products():
-    print("Fetching all products")
+async def get_all_products(
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=100),
+    sort: Optional[str] = Query(None, enum=list(_ALLOWED_SORT_FIELDS)),
+    order: Optional[str] = Query("asc", pattern="^(asc|desc)$"),
+):
+    sort_field = sort if sort in _ALLOWED_SORT_FIELDS else "_id"
+    sort_dir = -1 if order == "desc" else 1
+
+    total = await products_collection.count_documents({})
+    skip = (page - 1) * limit
+
+    cursor = products_collection.find().sort(sort_field, sort_dir).skip(skip).limit(limit)
     products = []
-    cursor = products_collection.find()
     async for product in cursor:
         products.append(product_to_response(product))
-    return products
+
+    return {"data": products, "page": page, "limit": limit, "total": total}
 
 
 @router.get("/search")
