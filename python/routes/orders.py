@@ -23,7 +23,7 @@ def _order_to_response(order: dict) -> dict:
 
 
 async def _resolve_items(items: list) -> tuple:
-    """Fetch product prices and compute total."""
+    """Fetch product prices, validate stock, compute total."""
     if not items:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -34,6 +34,7 @@ async def _resolve_items(items: list) -> tuple:
 
     resolved = []
     total = 0.0
+    stock_updates = []
 
     for item in items:
         if not ObjectId.is_valid(item.productId):
@@ -53,6 +54,16 @@ async def _resolve_items(items: list) -> tuple:
                 detail=f"Product not found: {item.productId}",
             )
 
+        available = product.get("stock", 0)
+        if item.quantity > available:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "message": "Insufficient stock",
+                    "errors": {"productId": f"insufficient stock for product: {item.productId}"},
+                },
+            )
+
         price = product.get("price", 0)
         total += price * item.quantity
         resolved.append({
@@ -60,8 +71,9 @@ async def _resolve_items(items: list) -> tuple:
             "quantity": item.quantity,
             "price": price,
         })
+        stock_updates.append((ObjectId(item.productId), item.quantity))
 
-    return resolved, round(total, 2)
+    return resolved, round(total, 2), stock_updates
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -69,7 +81,13 @@ async def create_order(
     request: OrderRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    resolved_items, total = await _resolve_items(request.items)
+    resolved_items, total, stock_updates = await _resolve_items(request.items)
+
+    for product_oid, quantity in stock_updates:
+        await products_collection.update_one(
+            {"_id": product_oid},
+            {"$inc": {"stock": -quantity}, "$set": {"updatedAt": datetime.utcnow()}},
+        )
 
     order_doc = {
         "items": resolved_items,
@@ -126,7 +144,7 @@ async def update_order(
             detail="Order not found",
         )
 
-    resolved_items, total = await _resolve_items(request.items)
+    resolved_items, total, _ = await _resolve_items(request.items)
 
     result = await orders_collection.update_one(
         {"_id": ObjectId(order_id)},

@@ -329,6 +329,42 @@ async def update_product(
     return product_to_response(product)
 
 
+@router.patch("/{product_id}/stock")
+async def update_stock(
+    product_id: str,
+    request: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    if not ObjectId.is_valid(product_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
+        )
+
+    stock = request.get("stock")
+    if stock is None or not isinstance(stock, (int, float)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"message": "Validation failed", "errors": {"stock": "stock is required"}},
+        )
+    if stock < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"message": "Validation failed", "errors": {"stock": "stock cannot be negative"}},
+        )
+
+    result = await products_collection.update_one(
+        {"_id": ObjectId(product_id)},
+        {"$set": {"stock": int(stock), "updatedAt": datetime.utcnow()}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
+        )
+
+    product = await products_collection.find_one({"_id": ObjectId(product_id)})
+    return product_to_response(product)
+
+
 @router.delete("/{product_id}")
 async def delete_product(
     product_id: str,
