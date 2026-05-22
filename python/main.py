@@ -1,30 +1,25 @@
+from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
 
 from config import settings
 from database import init_indexes
-from seed import seed_data
 from routes.auth import router as auth_router
+from routes.orders import router as orders_router
 from routes.products import router as products_router
 from routes.users import router as users_router
-
-# CODE QUALITY ISSUE: unused variable
-APP_NAME = "SGarden Inventory API"
-DEBUG_MODE = True
-unused_config = {"key": "value", "secret": "not-so-secret"}
+from seed import seed_data
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     print("Starting SGarden API...")
     await init_indexes()
     await seed_data()
     print("SGarden API started successfully")
     yield
-    # Shutdown
     print("Shutting down SGarden API...")
 
 
@@ -35,7 +30,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -44,8 +38,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routes
 app.include_router(auth_router)
+app.include_router(orders_router)
 app.include_router(products_router)
 app.include_router(users_router)
 
